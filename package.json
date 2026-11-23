@@ -1,0 +1,12 @@
+{
+  "name": "audio-detector-find-the-dog",
+  "version": "1.0.0",
+  "description": "Audio Detector: Find the Dog - find a barking dog using only spatial audio.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.js\"",
+    "manifest": "python tools/make_manifests.py",
+    "start": "python tools/make_manifests.py && python tools/serve.py 8000"
+  }
+}

@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Audio Detector: Find the Dog</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="view" aria-label="Top-down map showing only your position and facing direction"></canvas>
+
+  <section id="menu" class="overlay" aria-labelledby="menuTitle">
+    <div class="card">
+      <h1 id="menuTitle">Audio Detector: Find the Dog</h1>
+      <p class="tagline">You can barely see: only two metres in front of you. Somewhere in this windy
+        forest a dog is waiting. Press <kbd>Space</kbd> and it barks once. Wind and birds come from
+        every direction; follow the bark, and mind the trees.</p>
+
+      <div class="headphones" role="note">
+        <span class="hp-icon" aria-hidden="true">🎧</span>
+        <div><strong>Use headphones.</strong> The game uses 3D (HRTF) audio to tell left from right
+          and front from back. Laptop or room speakers will not work well.</div>
+      </div>
+
+      <div id="fileWarning" class="error" hidden>
+        This page was opened as a local file, so the browser blocks its JavaScript modules.
+        Start a local server instead (double-click <code>run.bat</code>, or run
+        <code>python -m http.server 8000</code> and open <code>http://localhost:8000</code>).
+      </div>
+
+      <fieldset id="difficulty">
+        <legend>Difficulty (starting distance to the dog)</legend>
+      </fieldset>
+
+      <fieldset>
+        <legend>Audio cues</legend>
+        <label><input type="checkbox" id="cueStart"> Sound when a round starts</label>
+        <label><input type="checkbox" id="cueEnd"> Sound when a round ends</label>
+      </fieldset>
+
+      <div class="buttons">
+        <button id="barkBtn" type="button">Test bark</button>
+        <button id="testBtn" type="button">Headphone check</button>
+        <button id="startBtn" type="button" class="primary">Start</button>
+      </div>
+      <p id="testHint" class="hint" aria-live="polite"></p>
+      <p id="barkStatus" class="hint">Sounds: checking assets/…</p>
+      <p id="error" class="error" role="alert" hidden></p>
+
+      <details class="controls">
+        <summary>Controls</summary>
+        <table>
+          <tr><td><kbd>←</kbd> <kbd>→</kbd> / <kbd>A</kbd> <kbd>D</kbd></td><td>Turn left / right</td></tr>
+          <tr><td><kbd>↑</kbd> <kbd>↓</kbd> / <kbd>W</kbd> <kbd>S</kbd></td><td>Walk forward / backward</td></tr>
+          <tr><td><kbd>Space</kbd></td><td>Make the dog bark (0.5 s cooldown)</td></tr>
+          <tr><td><kbd>H</kbd></td><td>Reveal toggle: full map, trees, dog, audio levels (recorded in the results)</td></tr>
+          <tr><td><kbd>B</kbd></td><td>Mute / unmute the forest ambience (testing; recorded in the results)</td></tr>
+          <tr><td><kbd>R</kbd></td><td>Restart with new positions</td></tr>
+          <tr><td><kbd>Esc</kbd> / <kbd>M</kbd></td><td>Back to this menu</td></tr>
+        </table>
+      </details>
+    </div>
+  </section>
+
+  <section id="results" class="overlay overlay--panel" hidden aria-labelledby="resultsTitle">
+    <div class="card">
+      <h2 id="resultsTitle">🐕 You found the dog!</h2>
+      <dl id="resultList"></dl>
+      <div class="buttons">
+        <button id="menuBtn" type="button">Menu (M)</button>
+        <button id="againBtn" type="button" class="primary">Play again (R)</button>
+      </div>
+    </div>
+  </section>
+
+  <script>
+    // ES modules don't load from file:// - explain how to run instead of showing a dead page.
+    if (location.protocol === 'file:') {
+      document.getElementById('fileWarning').hidden = false;
+      document.getElementById('startBtn').disabled = true;
+      document.getElementById('testBtn').disabled = true;
+      document.getElementById('barkBtn').disabled = true;
+    }
+  </script>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
