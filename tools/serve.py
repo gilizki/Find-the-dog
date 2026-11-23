@@ -6,6 +6,10 @@ import sys
 class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header("Cache-Control", "no-store")
+        # Loading the page also wipes anything the browser cached for this address earlier (e.g. old copies
+        # of the game's modules saved by a plain `python -m http.server`), so it never mixes old and new files.
+        if self.path.split("?")[0] in ("/", "/index.html"):
+            self.send_header("Clear-Site-Data", '"cache"')
         super().end_headers()
 
 

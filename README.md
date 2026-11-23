@@ -15,13 +15,56 @@ and right channels are the right way round, and **Test bark** to hear the bark s
 
 ## Run it
 
-ES modules don't load from `file://`, so serve the folder locally:
+You need **Python 3** (for the small local server). No build step and no packages to install.
 
-- **Windows:** double-click `run.bat`. It refreshes the sound manifests, starts `python -m http.server 8000` and opens the browser.
-- **Any OS:** `npm start`, or `python tools/make_manifests.py && python -m http.server 8000`, then open <http://localhost:8000>.
+The game must be served by a local web server: opening `index.html` directly (`file://`) does not work,
+because browsers block JavaScript modules from local files.
 
-No build step and no dependencies. Works in current Chrome, Edge, Firefox and Safari. In Safari the
-vision window has a hard edge instead of a soft one, because Safari has no canvas `filter`.
+### Windows (easiest)
+
+1. Double-click **`run.bat`** in the project folder.
+2. It refreshes the lists of sound files, starts the game server on port 8000 and opens
+   <http://localhost:8000> in your browser.
+3. Put on headphones, choose difficulty, number of dogs and how they move, and press **Start**.
+4. To stop the game, close the black `run.bat` window (or press `Ctrl+C` in it).
+
+### Any OS (terminal)
+
+From the project folder:
+
+```
+npm start
+```
+
+or, without Node:
+
+```
+python tools/make_manifests.py
+python tools/serve.py 8000
+```
+
+Then open <http://localhost:8000>. Stop the server with `Ctrl+C`.
+
+### Use `tools/serve.py`, not `python -m http.server`
+
+`tools/serve.py` is the plain Python server plus two headers: it tells the browser not to cache the game
+files and clears anything it cached for this address before. With `python -m http.server` the browser may
+keep **old copies** of some game files after an update and mix them with new ones, which shows up as a
+missing menu option or a black screen after **Start**. If that happens, run `run.bat` / `serve.py` instead
+and reload the page (or in DevTools → Network tick **Disable cache** and reload).
+
+### Troubleshooting
+
+| Problem | Fix |
+| --- | --- |
+| "Address already in use" / port 8000 busy | Another server is still running. Close it, or start on another port: `python tools/serve.py 8080` and open <http://localhost:8080> |
+| Page opened as a file shows a warning | Start the server as above and use the `http://localhost:8000` address |
+| Old menu / black screen after an update | You were served old cached files; use `serve.py` (see above) and reload |
+| No sound | Click the page first (browsers only allow audio after a click), check the volume, and try **Test bark** |
+| Left and right are swapped | Use **Headphone check** on the start screen; turn your headphones around if needed |
+
+Works in current Chrome, Edge, Firefox and Safari. In Safari the vision window has a hard edge instead
+of a soft one, because Safari has no canvas `filter`.
 
 ### Tests
 
