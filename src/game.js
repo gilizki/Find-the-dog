@@ -8,12 +8,13 @@ import {
 import { generateForest, resolveCollisions } from './forest.js';
 import { circleInVision } from './vision.js';
 import { AmbientDirector, ambientProfile } from './ambientDirector.js';
+import { MOVEMENT_MODES, createDog, placeDogs, updateDog } from './dogs.js';
 
 export const GameState = Object.freeze({ MENU: 'menu', PLAYING: 'playing', WON: 'won' });
 
 /** Audio interface the game expects. Used when no audio engine is supplied (tests, no Web Audio). */
 export const silentAudio = Object.freeze({
-  setDog() {}, setListener() {}, setForest() {}, bark() {}, footstep() {}, bump() {}, treeBump() {},
+  setDog() {}, setDogs() {}, moveDog() {}, dogFound() {}, setListener() {}, setForest() {}, bark() {}, footstep() {}, bump() {}, treeBump() {},
   startCue() {}, endCue() {}, winJingle() {},
   ambientStart() {}, ambientStop() {}, ambientEvent() {}, setAmbientMuted() {},
 });
@@ -34,7 +35,8 @@ export class Game {
     this.difficultyKey = config.defaultDifficulty;
     this.cues = { ...config.cues };
     this.player = null;
-    this.dog = null;
+    this.dogs = [];
+    this.options = { dogCount: config.dogs.defaultCount, movement: config.dogs.defaultMovement };
     this.trees = [];
     this.seenTrees = new Set();
     this.path = [];
@@ -42,6 +44,25 @@ export class Game {
     this.ambientMuted = false;
     this.ambientDirector = new AmbientDirector(config.ambient, ambientRng);
     this.stats = null;
+  }
+
+  /** The first dog still being searched for (or the first dog). Setting it replaces all dogs with one. */
+  get dog() {
+    return this.dogs.find((d) => !d.found) ?? this.dogs[0] ?? null;
+  }
+
+  set dog(pos) {
+    this.dogs = pos ? [createDog(pos, 0, this.config.dogs, this.rng)] : [];
+    this._sendDogs();
+  }
+
+  get dogsFound() {
+    return this.dogs.filter((d) => d.found).length;
+  }
+
+  /** Rain level of the current difficulty: 'none' | 'light' | 'heavy'. */
+  get rain() {
+    return this.difficulty?.rain ?? 'none';
   }
 
   get difficulty() {
@@ -57,23 +78,36 @@ export class Game {
     return this.state === GameState.PLAYING && this.barkCooldown <= 0;
   }
 
-  startRound(difficultyKey = this.difficultyKey) {
+  /**
+   * @param difficultyKey  key of config.difficulties
+   * @param options        { dogCount: 1..config.dogs.maxCount, movement: 'off'|'calm'|'restless'|'shy' }
+   *                       (kept for restarts)
+   */
+  startRound(difficultyKey = this.difficultyKey, options = {}) {
     if (!this.config.difficulties[difficultyKey]) throw new Error(`Unknown difficulty "${difficultyKey}"`);
     this.difficultyKey = difficultyKey;
+    const dc = this.config.dogs;
+    const opt = { ...this.options, ...options };
+    opt.dogCount = Math.max(1, Math.min(dc.maxCount, Math.round(opt.dogCount) || 1));
+    if (!MOVEMENT_MODES.includes(opt.movement)) opt.movement = 'off';
+    this.options = opt;
     const { map, placement, trees: treesCfg, player: pc } = this.config;
     const { player, dog } = placeAtDistance(map, this.difficulty.distance, {
       margin: map.spawnMargin,
       maxAttempts: placement.maxAttempts,
       rng: this.rng,
     });
+    const dogPositions = placeDogs(map, player, this.difficulty.distance, opt.dogCount, {
+      margin: Math.max(map.spawnMargin, dc.wallMargin), minSeparation: dc.minSeparation, first: dog, rng: this.rng,
+    });
     const forest = generateForest({
-      map, player, dog, density: treesCfg.density[difficultyKey] ?? 0, treesCfg, playerRadius: pc.radius, rng: this.rng,
+      map, player, dogs: dogPositions, density: treesCfg.density[difficultyKey] ?? 0, treesCfg, playerRadius: pc.radius, rng: this.rng,
     });
     this.trees = forest.trees;
     this.forestInfo = { attempts: forest.attempts, density: forest.density };
     this.seenTrees = new Set();
     this.player = { x: player.x, y: player.y, heading: randomHeading(this.rng) };
-    this.dog = dog;
+    this.dogs = dogPositions.map((d, i) => createDog(d, i, dc, this.rng));
     this.path = [{ x: player.x, y: player.y }];
     this.reveal = false;
     this.barkCooldown = 0;
@@ -86,15 +120,16 @@ export class Game {
       walked: 0,
       wallBumps: 0,
       treeBumps: 0,
-      optimal: distance(player, dog),
+      optimal: distance(player, dog), // to the first dog (with several dogs: the nearest one is at the same distance)
       revealUsed: false,
       ambientMutedUsed: this.ambientMuted,
+      found: [],
     };
     this.state = GameState.PLAYING;
     this.audio.setForest(this.trees, treesCfg.occlusion);
-    this.audio.setDog(dog);
+    this._sendDogs();
     this.audio.setListener(this.player, { snap: true });
-    this.ambientProfile = ambientProfile(this.config, difficultyKey);
+    this.ambientProfile = ambientProfile(this.config, difficultyKey, this.rain);
     this.ambientDirector.reset(this.ambientProfile);
     this.audio.setAmbientMuted(this.ambientMuted);
     this.audio.ambientStart(this.ambientProfile);
@@ -133,9 +168,10 @@ export class Game {
     }
   }
 
+  /** SPACE: every dog that has not been found barks once (slightly out of step with each other). */
   bark() {
     if (!this.barkReady) return false;
-    this.audio.bark();
+    this.audio.bark(this.dogs.filter((d) => !d.found).map((d) => d.id));
     this.stats.barks++;
     this.barkCooldown = this.config.rules.barkCooldown;
     return true;
@@ -205,10 +241,41 @@ export class Game {
       this._updateSeen();
     }
 
+    this._updateDogs(dt);
     this.audio.setListener(p);
     for (const ev of this.ambientDirector.update(dt, p)) this.audio.ambientEvent(ev);
 
-    if (hasReachedDog(p, this.dog, rules.winRadius)) this._win();
+    for (const d of this.dogs) {
+      if (!d.found && hasReachedDog(p, d, rules.winRadius)) this._found(d);
+    }
+    if (this.dogs.length && this.dogs.every((d) => d.found)) this._win();
+  }
+
+  _sendDogs() {
+    if (this.audio.setDogs) this.audio.setDogs(this.dogs);
+    else if (this.dogs[0]) this.audio.setDog(this.dogs[0]);
+  }
+
+  _updateDogs(dt) {
+    const mode = this.options.movement;
+    if (mode === 'off') return;
+    const world = { player: this.player, trees: this.trees, map: this.config.map, cfg: this.config.dogs, mode, rng: this.rng };
+    for (const d of this.dogs) {
+      if (d.found) continue;
+      const bx = d.x, by = d.y;
+      updateDog(d, dt, world);
+      if (d.x !== bx || d.y !== by) this.audio.moveDog?.(d);
+    }
+  }
+
+  _found(dog) {
+    dog.found = true;
+    dog.state = 'rest';
+    dog.foundAt = this.stats.elapsed;
+    this.stats.found.push({ id: dog.id, time: this.stats.elapsed });
+    const remaining = this.dogs.filter((d) => !d.found).length;
+    if (remaining > 0) this.audio.dogFound?.(dog);
+    this.onEvent('dogFound', { dog, found: this.dogs.length - remaining, total: this.dogs.length });
   }
 
   /** Optional memory of trees that have been inside the vision window. */
@@ -249,6 +316,10 @@ export class Game {
     const minimumWalk = Math.max(0, s.optimal - this.config.rules.winRadius);
     return {
       difficulty: this.difficulty.label,
+      rain: this.rain,
+      dogs: this.dogs.length,
+      movement: this.options.movement,
+      foundTimes: s.found.map((f) => f.time),
       targetDistance: this.difficulty.distance,
       time: s.elapsed,
       barks: s.barks,

@@ -13,6 +13,10 @@ const el = {
   results: $('results'),
   resultList: $('resultList'),
   difficulty: $('difficulty'),
+  dogCount: $('dogCount'),
+  movement: $('movement'),
+  movementHint: $('movementHint'),
+  resultsTitle: $('resultsTitle'),
   cueStart: $('cueStart'),
   cueEnd: $('cueEnd'),
   startBtn: $('startBtn'),
@@ -38,17 +42,54 @@ if (problems.length) {
   showError(`Config problems: ${problems.join('; ')}`);
 }
 
-// Difficulty radio buttons come from config.js
-for (const [key, d] of Object.entries(CONFIG.difficulties)) {
-  const label = document.createElement('label');
-  const radio = document.createElement('input');
-  radio.type = 'radio';
-  radio.name = 'difficulty';
-  radio.value = key;
-  radio.checked = key === CONFIG.defaultDifficulty;
-  label.append(radio, ` ${d.label} (${d.distance} m)`);
-  el.difficulty.append(label);
+// ---- Start-screen choices (built from config.js, remembered in this browser) ----
+const SETTINGS_KEY = 'findTheDog.settings';
+function loadSettings() {
+  try {
+    return JSON.parse(localStorage.getItem(SETTINGS_KEY)) ?? {};
+  } catch {
+    return {};
+  }
 }
+function saveSettings(s) {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+  } catch { /* private mode etc.: just not remembered */ }
+}
+const saved = loadSettings();
+
+function addRadios(fieldset, name, options, selected) {
+  for (const [value, text] of options) {
+    const label = document.createElement('label');
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = name;
+    radio.value = value;
+    radio.checked = String(value) === String(selected);
+    label.append(radio, ` ${text}`);
+    fieldset.append(label);
+  }
+  if (!fieldset.querySelector('input:checked')) fieldset.querySelector('input').checked = true;
+}
+const picked = (fieldset) => fieldset.querySelector('input:checked')?.value;
+
+const RAIN_TEXT = { none: 'dry', light: 'light rain', heavy: 'heavy rain' };
+addRadios(el.difficulty, 'difficulty',
+  Object.entries(CONFIG.difficulties).map(([key, d]) => [key, `${d.label} (${d.distance} m, ${RAIN_TEXT[d.rain ?? 'none']})`]),
+  saved.difficulty in CONFIG.difficulties ? saved.difficulty : CONFIG.defaultDifficulty);
+addRadios(el.dogCount, 'dogCount',
+  Array.from({ length: CONFIG.dogs.maxCount }, (_, i) => [i + 1, String(i + 1)]),
+  saved.dogCount ?? CONFIG.dogs.defaultCount);
+const MOVEMENT = [
+  ['off', 'No', 'The dogs stay where they are.'],
+  ['calm', 'Calm', 'The dogs wander slowly and stop to sniff around.'],
+  ['restless', 'Restless', 'The dogs move often and further. Bark again to keep track of them.'],
+  ['shy', 'Shy', 'The dogs run away when you get close, then rest. Catch them while they rest.'],
+];
+addRadios(el.movement, 'movement', MOVEMENT.map(([k, t]) => [k, t]), saved.movement ?? CONFIG.dogs.defaultMovement);
+const updateMovementHint = () => { el.movementHint.textContent = MOVEMENT.find(([k]) => k === picked(el.movement))?.[2] ?? ''; };
+el.movement.addEventListener('change', updateMovementHint);
+updateMovementHint();
 el.cueStart.checked = CONFIG.cues.startCue;
 el.cueEnd.checked = CONFIG.cues.endCue;
 
@@ -78,8 +119,11 @@ const renderer = createRenderer(el.canvas, CONFIG, { getAudioLevels: () => (audi
 const fmtTime = (s) => (s < 60 ? `${s.toFixed(1)} s` : `${Math.floor(s / 60)} min ${(s % 60).toFixed(1)} s`);
 
 function showResults(r) {
+  el.resultsTitle.textContent = r.dogs > 1 ? `🐕 You found all ${r.dogs} dogs!` : '🐕 You found the dog!';
   const rows = [
-    ['Difficulty', `${r.difficulty} (${r.targetDistance} m)`],
+    ['Difficulty', `${r.difficulty} (${r.targetDistance} m, ${RAIN_TEXT[r.rain] ?? 'dry'})`],
+    ['Dogs', `${r.dogs} · ${MOVEMENT.find(([k]) => k === r.movement)?.[1] ?? r.movement} movement`],
+    ...(r.dogs > 1 ? r.foundTimes.map((t, i) => [`Dog ${i + 1} found at`, fmtTime(t)]) : []),
     ['Time', fmtTime(r.time)],
     ['Barks used', r.barks],
     ['Steps', r.steps],
@@ -137,10 +181,15 @@ el.startBtn.addEventListener('click', async () => {
   if (!(await ensureAudio())) return;
   game.cues.startCue = el.cueStart.checked;
   game.cues.endCue = el.cueEnd.checked;
-  const key = el.difficulty.querySelector('input[name="difficulty"]:checked')?.value ?? CONFIG.defaultDifficulty;
+  const settings = {
+    difficulty: picked(el.difficulty) ?? CONFIG.defaultDifficulty,
+    dogCount: Number(picked(el.dogCount) ?? CONFIG.dogs.defaultCount),
+    movement: picked(el.movement) ?? CONFIG.dogs.defaultMovement,
+  };
+  saveSettings(settings);
   el.startBtn.blur(); // so SPACE doesn't re-click the button
   input.clear();
-  game.startRound(key);
+  game.startRound(settings.difficulty, { dogCount: settings.dogCount, movement: settings.movement });
 });
 
 el.testBtn.addEventListener('click', async () => {

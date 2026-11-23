@@ -371,3 +371,42 @@ export function synthTreeThud(sr, { rng = Math.random } = {}) {
   }
   return normalize(out, 0.85);
 }
+
+/**
+ * Rain: a steady high hiss (many tiny distant drops) plus individual drop "ticks" on leaves, each with
+ * its own pitch and stereo position. Returns [left, right], loopable. `density` = drops per second.
+ */
+export function synthRain(sr, { seconds = 8, density = 90, rng = Math.random } = {}) {
+  const xf = Math.floor(sr * 1);
+  const n = Math.floor(sr * seconds);
+  const total = n + xf;
+  const swell = smoothRandom(total, sr, 2, rng);
+  const chans = [0, 1].map(() => {
+    // Hiss: white noise, high-passed (noise minus its low-pass) and gently low-passed at the top.
+    const x = new Float32Array(total);
+    const aLo = onePole(900, sr), aHi = onePole(7000, sr);
+    let lo = 0, hi = 0;
+    for (let i = 0; i < total; i++) {
+      const w = rng() * 2 - 1;
+      lo += aLo * (w - lo);
+      hi += aHi * (w - lo - hi);
+      x[i] = hi * (0.8 + 0.2 * swell[i]) * 0.5;
+    }
+    return x;
+  });
+  // Drops: short decaying band-passed clicks, panned randomly.
+  const count = Math.floor(density * (total / sr));
+  for (let k = 0; k < count; k++) {
+    const len = Math.floor(sr * (0.004 + rng() * 0.012));
+    const at = Math.floor(rng() * (total - len));
+    const bp = bandpass(Math.min(0.4 * sr, 1800 + rng() * 4500), 3 + rng() * 5, sr);
+    const amp = 0.25 + rng() * 0.75;
+    const pan = rng();
+    for (let i = 0; i < len; i++) {
+      const v = bp(rng() * 2 - 1) * Math.exp((-6 * i) / len) * amp * 1.6;
+      chans[0][at + i] += v * Math.sqrt(1 - pan);
+      chans[1][at + i] += v * Math.sqrt(pan);
+    }
+  }
+  return chans.map((x) => normalize(loopify(x, n, xf), 0.9));
+}

@@ -3,7 +3,8 @@
 //   base bed (stereo loop, non-spatial) ─► bedGain ─┐
 //   gust  (mono) ─► envelope gain ─► PannerNode (HRTF, no distance loss, drifting) ─┤
 //   bird  (mono) ─► gain ─► PannerNode (HRTF, inverse distance, maybe flying)      ─┼─► fadeBus ─► muteGain ─► (out)
-//   crickets (optional stereo loop, non-spatial) ─► cricketGain ────────────────────┘
+//   crickets (optional stereo loop, non-spatial) ─► cricketGain ────────────────────┤
+//   rain (stereo loop, non-spatial; level per difficulty, bursts) ─► rainGain ──────┘
 
 import { toAudioPosition } from './audioMapping.js';
 import * as synth from './sounds.js';
@@ -24,6 +25,8 @@ export class AmbientAudio {
     this.bedGain.connect(this.fadeBus);
     this.cricketGain = new GainNode(ctx, { gain: 0 });
     this.cricketGain.connect(this.fadeBus);
+    this.rainGain = new GainNode(ctx, { gain: 0 });
+    this.rainGain.connect(this.fadeBus);
     this.loops = [];      // recorded beds: stereo AudioBuffers
     this.gustSources = []; // recorded loops as mono AudioBuffers (gust material)
     this.birds = [];      // recorded birds: mono AudioBuffers
@@ -47,6 +50,7 @@ export class AmbientAudio {
       this._buffer([normalizeLoudness(synth.synthGust(sr, { duration: rand(this.cfg.gusts.durationSec) }), sr, proc)]));
     this.synthBirds = Array.from({ length: this.cfg.birds.variants }, () =>
       this._buffer([normalizeLoudness(synth.synthBirdChirp(sr), sr, proc)]));
+    this.synthRain = this._buffer(synth.synthRain(sr).map((c) => normalizeLoudness(c, sr, whole)));
     if (this.cfg.crickets?.enabled) {
       this.synthCricketBed = this._buffer(synth.synthCrickets(sr).map((c) => normalizeLoudness(c, sr, whole)));
     }
@@ -77,6 +81,11 @@ export class AmbientAudio {
     } else {
       this.bedGain.gain.setTargetAtTime(dbToGain(profile.bedDb), t, 0.1);
     }
+    // Rain: steady level for this difficulty (silent when dry).
+    const rainDb = profile.rain ? profile.rain.bedDb : null;
+    if (rainDb != null && !this.rainSource) this.rainSource = this._startLoop(this.synthRain, this.rainGain, rainDb);
+    this.rainGain.gain.cancelScheduledValues(t);
+    this.rainGain.gain.setTargetAtTime(rainDb != null ? dbToGain(rainDb) : 0, t, 0.3);
     if (this.synthCricketBed && !this.cricketSource) this.cricketSource = this._startLoop(this.synthCricketBed, this.cricketGain, this.cfg.crickets.db);
     const g = this.fadeBus.gain;
     g.cancelScheduledValues(t);
@@ -143,7 +152,17 @@ export class AmbientAudio {
     if (!this.profile) return;
     const t0 = this.ctx.currentTime + 0.02;
     const gain = dbToGain(ev.levelDb);
-    if (ev.type === 'gust') {
+    if (ev.type === 'rainBurst') {
+      // Heavy rain swells up and back down to the steady level.
+      const base = dbToGain(this.profile.rain?.bedDb ?? -120);
+      const g = this.rainGain.gain;
+      const rise = ev.duration * 0.35;
+      g.cancelScheduledValues(t0);
+      g.setValueAtTime(base, t0);
+      g.linearRampToValueAtTime(gain, t0 + rise);
+      g.setValueAtTime(gain, t0 + ev.duration - rise);
+      g.linearRampToValueAtTime(base, t0 + ev.duration);
+    } else if (ev.type === 'gust') {
       const panner = this._panner({ distanceLoss: false });
       const env = new GainNode(this.ctx, { gain: 0 });
       let src, dur, offset = 0;

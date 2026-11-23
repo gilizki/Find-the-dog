@@ -172,3 +172,14 @@ test('synth bark: randomized per bark, and most energy in the 0.4-3.2 kHz forman
   }
   assert.ok(band / total > 0.7, `band energy share ${(band / total * 100).toFixed(0)} %`);
 });
+
+test('synthRain: stereo, loopable length, finite and not silent', async () => {
+  const { synthRain } = await import('../src/sounds.js');
+  const sr = 8000;
+  const [l, r] = synthRain(sr, { seconds: 2, density: 50 });
+  assert.equal(l.length, 2 * sr);
+  assert.equal(r.length, 2 * sr);
+  let e = 0;
+  for (const v of l) { assert.ok(Number.isFinite(v)); e += v * v; }
+  assert.ok(e > 0);
+});

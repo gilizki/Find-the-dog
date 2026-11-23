@@ -2,7 +2,7 @@
 // Game -> audio parameter mapping lives in audioMapping.js; sound synthesis in sounds.js.
 //
 // Graph:
-//   bark source -> lowpass (distance + rear muffle) -> rearGain -> PannerNode(HRTF, inverse) -> dogBus ┐
+//   per dog: bark source -> lowpass (distance + rear muffle) -> rearGain -> PannerNode(HRTF) -> dogBus ┐
 //   footsteps / bump (non-spatial)                                                     -> sfxBus ──┤-> master -> limiter -> out
 //   start/end cues, win jingle (non-spatial)                                           -> cueBus ──┤
 //   forest ambience (ambient.js: bed + spatial gusts/birds, fades, mute)            -> ambient ──┘
@@ -32,7 +32,8 @@ export class AudioEngine {
     this.ambientCfg = ambientCfg;
     this.ctx = null;
     this.player = null;
-    this.dog = null;
+    this.dogs = [];             // [{ id, x, y, voice, found }] as given by the game
+    this.dogVoices = new Map(); // id -> { dog, filter, rearGain, panner }
     this.trees = [];
     this.occlusionCfg = null;
     this.lastDogParams = null;
@@ -109,22 +110,8 @@ export class AudioEngine {
     this.limiter = new DynamicsCompressorNode(c, { threshold: -3, knee: 0, ratio: 20, attack: 0.002, release: 0.1 });
     this.master.connect(this.limiter).connect(c.destination);
 
-    this.dogFilter = new BiquadFilterNode(c, { type: 'lowpass', frequency: cfg.lowpass.nearHz, Q: cfg.lowpass.Q });
-    this.dogRearGain = new GainNode(c, { gain: 1 });
-    this.panner = new PannerNode(c, {
-      panningModel: cfg.panningModel,
-      distanceModel: cfg.distanceModel,
-      refDistance: cfg.refDistance,
-      rolloffFactor: cfg.rolloffFactor,
-      maxDistance: cfg.maxDistance,
-      coneInnerAngle: 360,
-      coneOuterAngle: 360,
-      // Safety net: force a mono input even if a stereo buffer ever slips through.
-      channelCount: 1,
-      channelCountMode: 'explicit',
-    });
     this.dogBus = new GainNode(c, { gain: cfg.dogGain });
-    this.dogFilter.connect(this.dogRearGain).connect(this.panner).connect(this.dogBus).connect(this.master);
+    this.dogBus.connect(this.master);
 
     this.sfxBus = new GainNode(c, { gain: cfg.sfxGain });
     this.sfxBus.connect(this.master);
@@ -187,8 +174,9 @@ export class AudioEngine {
    * no recordings loaded, a freshly synthesized bark (randomized each time). Both are mono and
    * loudness-normalized the same way, so distance cues stay consistent.
    */
-  _nextBarkBuffer(synthOverrides = {}) {
+  _nextBarkBuffer(synthOverrides = {}, sample = null) {
     if (this.barkSamples.length) {
+      if (sample != null) return this.barkSamples[sample % this.barkSamples.length];
       this.lastBarkIndex = pickIndex(this.barkSamples.length, this.lastBarkIndex);
       return this.barkSamples[this.lastBarkIndex];
     }
@@ -208,19 +196,70 @@ export class AudioEngine {
 
   // ---- spatial state -------------------------------------------------------
 
-  setDog(dog) {
-    this.dog = { x: dog.x, y: dog.y };
-    if (!this.ctx) return;
-    const p = toAudioPosition(dog.x, dog.y);
-    const P = this.panner;
+  /** One spatial chain per dog: its own distance/rear filter, occlusion gain and HRTF panner. */
+  _dogChain() {
+    const c = this.ctx, cfg = this.cfg;
+    const filter = new BiquadFilterNode(c, { type: 'lowpass', frequency: cfg.lowpass.nearHz, Q: cfg.lowpass.Q });
+    const rearGain = new GainNode(c, { gain: 1 });
+    const panner = new PannerNode(c, {
+      panningModel: cfg.panningModel,
+      distanceModel: cfg.distanceModel,
+      refDistance: cfg.refDistance,
+      rolloffFactor: cfg.rolloffFactor,
+      maxDistance: cfg.maxDistance,
+      coneInnerAngle: 360,
+      coneOuterAngle: 360,
+      // Safety net: force a mono input even if a stereo buffer ever slips through.
+      channelCount: 1,
+      channelCountMode: 'explicit',
+    });
+    filter.connect(rearGain).connect(panner).connect(this.dogBus);
+    return { filter, rearGain, panner };
+  }
+
+  _placePanner(P, x, y, snap) {
+    const p = toAudioPosition(x, y);
     if (P.positionX) {
-      setParam(P.positionX, p.x, this.ctx, 0, true);
-      setParam(P.positionY, p.y, this.ctx, 0, true);
-      setParam(P.positionZ, p.z, this.ctx, 0, true);
+      setParam(P.positionX, p.x, this.ctx, this.cfg.smoothing, snap);
+      setParam(P.positionY, p.y, this.ctx, this.cfg.smoothing, snap);
+      setParam(P.positionZ, p.z, this.ctx, this.cfg.smoothing, snap);
     } else {
       P.setPosition(p.x, p.y, p.z);
     }
+  }
+
+  /** All dogs of a round (replaces the previous ones). */
+  setDogs(dogs) {
+    this.dogs = dogs;
+    if (!this.ctx) return;
+    for (const v of this.dogVoices.values()) {
+      // Let a bark that is still ringing finish, then drop the chain.
+      setTimeout(() => v.panner.disconnect(), 3000);
+    }
+    this.dogVoices = new Map();
+    for (const d of dogs) {
+      const chain = this._dogChain();
+      this.dogVoices.set(d.id, { dog: d, ...chain });
+      this._placePanner(chain.panner, d.x, d.y, true);
+    }
     this._updateDogTone(true);
+  }
+
+  /** Back-compat: a single dog. */
+  setDog(dog) {
+    this.setDogs([{ id: 0, voice: null, found: false, ...dog }]);
+  }
+
+  /** A dog walked: move its panner smoothly. */
+  moveDog(dog) {
+    const v = this.dogVoices.get(dog.id);
+    if (!v) return;
+    this._placePanner(v.panner, dog.x, dog.y, false);
+  }
+
+  /** The first dog still being searched for (debug readout). */
+  get dog() {
+    return this.dogs.find((d) => !d.found) ?? this.dogs[0] ?? null;
   }
 
   /** Call every frame with the player's position + heading. */
@@ -258,12 +297,17 @@ export class AudioEngine {
   }
 
   _updateDogTone(snap) {
-    if (!this.dog || !this.player) return;
-    const params = computeDogParams(this.player, this.dog, this.cfg, { trees: this.trees, occlusion: this.occlusionCfg });
-    this.lastDogParams = params;
-    if (!this.ctx) return;
-    setParam(this.dogFilter.frequency, params.cutoffHz, this.ctx, this.cfg.smoothing, snap);
-    setParam(this.dogRearGain.gain, params.toneGain, this.ctx, this.cfg.smoothing, snap);
+    if (!this.player) return;
+    const first = this.dog;
+    for (const d of this.dogs) {
+      if (d.found && d !== first) continue;
+      const params = computeDogParams(this.player, d, this.cfg, { trees: this.trees, occlusion: this.occlusionCfg });
+      if (d === first) this.lastDogParams = params;
+      const v = this.ctx && this.dogVoices.get(d.id);
+      if (!v) continue;
+      setParam(v.filter.frequency, params.cutoffHz, this.ctx, this.cfg.smoothing, snap);
+      setParam(v.rearGain.gain, params.toneGain, this.ctx, this.cfg.smoothing, snap);
+    }
   }
 
   // ---- ambience (facade over ambient.js) ----------------------------------
@@ -286,13 +330,37 @@ export class AudioEngine {
 
   // ---- one-shot sounds -----------------------------------------------------
 
-  /** The dog's bark: goes through the distance/rear filter and the HRTF panner. */
-  bark() {
+  /**
+   * Barks of the given dogs (ids; default: all), each through its own filter and HRTF panner, in its own
+   * voice. With several dogs they bark slightly out of step (CONFIG.dogs.barkStaggerSec).
+   */
+  bark(ids = this.dogs.map((d) => d.id), { staggerSec = CONFIG.dogs.barkStaggerSec } = {}) {
     if (!this.ctx) return;
-    const { rate, gain } = barkVariation(this.cfg.barkVariation);
-    this._play(this._nextBarkBuffer(), this.dogFilter, { rate, gain });
+    let delay = 0;
+    // A random order each time, so you cannot tell dogs apart by who barks first.
+    const order = [...ids].sort(() => Math.random() - 0.5);
+    for (const id of order) {
+      const v = this.dogVoices.get(id);
+      if (!v) continue;
+      const voice = v.dog.voice ?? {};
+      const { rate, gain } = barkVariation(this.cfg.barkVariation);
+      const buffer = this._nextBarkBuffer({ pitchScale: voice.pitchScale ?? 1 }, voice.sample ?? null);
+      this._play(buffer, v.filter, { rate: rate * (voice.rate ?? 1), gain, delay });
+      delay += staggerSec[0] + Math.random() * (staggerSec[1] - staggerSec[0]);
+    }
     this._levels.barkAt = this.ctx.currentTime;
     this._levels.barkPeakDb = -Infinity;
+  }
+
+  /** A dog was found (more remain): a short cue and a happy yip in that dog's voice, centred. */
+  dogFound(dog) {
+    if (!this.ctx) return;
+    const voice = dog.voice ?? {};
+    this._play(this.buffers.endCue, this.cueBus, { gain: 0.6 });
+    for (const [i, at] of [0.15, 0.32].entries()) {
+      const buffer = this._nextBarkBuffer({ pitchScale: 1.7 * (voice.pitchScale ?? 1), durationMs: [90, 120], doublePulseChance: 0 }, voice.sample ?? null);
+      this._play(buffer, this.cueBus, { gain: 1.1 - i * 0.2, rate: this.barkSamples.length ? 1.2 * (voice.rate ?? 1) : 1, delay: at });
+    }
   }
 
   /** One bark, centred and non-spatial, for judging the sound from the start screen. */

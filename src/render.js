@@ -5,7 +5,8 @@
 //  - follow (normal play): centred on the player, zoomed in, heading-up (the player always faces up
 //    the screen and the world rotates around them when they turn); everything is dark except the tiny
 //    vision window in front of the player (soft edge), plus the player and heading arrow.
-//  - overview (H reveal, win screen): the whole map with trees, path, dog, and the audio debug readout.
+//  - overview (H reveal, win screen): the whole map with trees, path, dogs, and the audio debug readout.
+// Rain (per difficulty) is drawn in both: darker light, falling streaks, and splash rings on the ground.
 
 import { forwardVector, rightVector, radToDeg } from './geometry.js';
 import { barkVsAmbient, computeDogParams } from './audioMapping.js';
@@ -37,7 +38,12 @@ const COLORS = {
   text: '#c9d4e3',
   dim: '#7d8a9c',
   warn: '#ff6b6b',
+  rain: 'rgba(170, 200, 235, ',
+  rainDark: 'rgba(8, 14, 26, ',
 };
+
+/** One colour per dog in the overview (path lines, win radius). */
+const DOG_COLORS = ['#ffb347', '#ff7eb6', '#8be28b', '#c39bff'];
 
 /** Triangle (screen space) for the heading indicator: tip points along forwardVector(heading). */
 export function headingTriangle(cx, cy, heading, radiusPx) {
@@ -76,6 +82,9 @@ export function createRenderer(canvas, config, { getAudioLevels = null } = {}) {
   const HUD = 44;
   const PAD = 20;
 
+  // Rain animation state (screen-space streaks, world-space splashes).
+  const rainFx = { streaks: [], splashes: [], last: 0, level: null };
+
   // Hardest difficulty (largest distance) for the bark-vs-ambient readout.
   const maxKey = Object.entries(config.difficulties).sort((a, b) => b[1].distance - a[1].distance)[0][0];
 
@@ -95,9 +104,14 @@ export function createRenderer(canvas, config, { getAudioLevels = null } = {}) {
     ctx.fillStyle = COLORS.bg;
     ctx.fillRect(0, 0, w, h);
 
+    const now = performance.now() / 1000;
+    const dt = Math.min(0.1, Math.max(0, now - (rainFx.last || now)));
+    rainFx.last = now;
     if (game.player && game.state !== GameState.MENU) {
+      const rain = config.rain?.[game.rain] ?? null;
       if (game.showSolution) drawOverview(game, w, h);
-      else drawFollow(game, w, h);
+      else drawFollow(game, w, h, rain, dt);
+      if (rain) drawRainStreaks(rain, w, h, dt, game.showSolution ? 0.5 : 1);
     }
     drawHud(game, w, h);
   }
@@ -197,8 +211,11 @@ export function createRenderer(canvas, config, { getAudioLevels = null } = {}) {
     }
   }
 
-  /** The dog as seen in the play view: a 🐕 on a small patch of ground (the patch only outside the window). */
-  function drawDog(c, x, y, r, withGround = false) {
+  /**
+   * A dog as seen in the play view: its emoji (facing where it walks) on a small patch of ground (the patch
+   * only outside the window). Found dogs get a small heart.
+   */
+  function drawDog(c, x, y, r, withGround = false, { emoji = '🐕', faceRight = false, found = false } = {}) {
     if (withGround) {
       const g = c.createRadialGradient(x, y, r * 0.5, x, y, r * 2);
       g.addColorStop(0, COLORS.ground);
@@ -216,8 +233,77 @@ export function createRenderer(canvas, config, { getAudioLevels = null } = {}) {
     c.textAlign = 'center';
     c.textBaseline = 'middle';
     c.fillStyle = '#fff';
-    c.fillText('🐕', x, y);
+    // Dog emoji face left; mirror when walking right.
+    c.save();
+    c.translate(x, y);
+    if (faceRight) c.scale(-1, 1);
+    c.fillText(emoji, 0, 0);
+    c.restore();
+    if (found) {
+      c.font = `${Math.round(r * 0.9)}px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", system-ui, sans-serif`;
+      c.fillText('❤️', x + r * 0.9, y - r * 1.1);
+    }
     c.textBaseline = 'alphabetic';
+  }
+
+  // ---- rain ------------------------------------------------------------------
+
+  /** Falling streaks over the whole screen (screen space, so they read as rain whichever way you face). */
+  function drawRainStreaks(rain, w, h, dt, alpha) {
+    const target = Math.round(rain.drops * (w * h) / (1280 * 720));
+    const S = rainFx.streaks;
+    const spawn = () => ({ x: Math.random() * (w + 200) - 100, y: Math.random() * h, len: 10 + Math.random() * 18, v: 650 + Math.random() * 450, a: 0.15 + Math.random() * 0.25 });
+    if (rainFx.level !== rain || S.length !== target) {
+      rainFx.level = rain;
+      S.length = Math.min(S.length, target);
+      while (S.length < target) S.push(spawn());
+    }
+    const slant = 0.22; // wind: streaks lean a little
+    ctx.save();
+    ctx.lineWidth = 1;
+    ctx.lineCap = 'round';
+    for (const d of S) {
+      d.y += d.v * dt;
+      d.x += d.v * dt * slant;
+      if (d.y - d.len > h || d.x > w + 100) {
+        Object.assign(d, spawn());
+        d.y = HUD - d.len - Math.random() * 40;
+      }
+      ctx.strokeStyle = `${COLORS.rain}${(d.a * alpha).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.moveTo(d.x, d.y);
+      ctx.lineTo(d.x - d.len * slant, d.y - d.len);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /** Splash rings on the ground around the player (world space, drawn into the vision window). */
+  function drawSplashes(c, rain, p, sx, sy, ppm, dt, reach) {
+    const S = rainFx.splashes;
+    const life = 0.45;
+    // Spawn rate scales with the rain density.
+    let n = rain.drops * 0.12 * dt;
+    while (n > 0) {
+      if (Math.random() < n) {
+        const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * reach;
+        S.push({ x: p.x + Math.cos(a) * r, y: p.y + Math.sin(a) * r, t: 0, size: 0.06 + Math.random() * 0.08 });
+      }
+      n -= 1;
+    }
+    c.save();
+    c.lineWidth = 1.2;
+    for (let i = S.length - 1; i >= 0; i--) {
+      const s = S[i];
+      s.t += dt;
+      if (s.t > life || Math.hypot(s.x - p.x, s.y - p.y) > reach + 1) { S.splice(i, 1); continue; }
+      const u = s.t / life;
+      c.strokeStyle = `${COLORS.rain}${(0.55 * (1 - u)).toFixed(3)})`;
+      c.beginPath();
+      c.arc(sx(s.x), sy(s.y), (0.02 + s.size * u) * ppm, 0, Math.PI * 2);
+      c.stroke();
+    }
+    c.restore();
   }
 
   function drawPlayer(p, sx, sy, rPx, arrowScale) {
@@ -234,7 +320,7 @@ export function createRenderer(canvas, config, { getAudioLevels = null } = {}) {
 
   // ---- follow camera: only the vision window ------------------------------
 
-  function drawFollow(game, w, h) {
+  function drawFollow(game, w, h, rain = null, dt = 0) {
     const p = game.player;
     const v = config.vision;
     const { map } = config;
@@ -296,16 +382,18 @@ export function createRenderer(canvas, config, { getAudioLevels = null } = {}) {
     fctx.lineWidth = 6;
     fctx.strokeRect(sx(0), sy(0), map.width * ppm, map.height * ppm);
     const viewR = v.range + config.player.radius + 3;
-    // The dog, when it is inside the window (drawn upright in screen space).
-    const d = game.dog;
-    const dogDist = d ? Math.hypot(d.x - p.x, d.y - p.y) : Infinity;
-    if (dogDist < viewR) {
+    if (rain) drawSplashes(fctx, rain, p, sx, sy, ppm, dt, viewR);
+    // Dogs inside the window (drawn upright in screen space, facing the way they walk on screen).
+    const dogStyle = (d) => ({ emoji: d.voice?.emoji ?? '🐕', faceRight: d.facing * cosR > 0, found: d.found });
+    const near = game.dogs.map((d) => ({ d, dist: Math.hypot(d.x - p.x, d.y - p.y) }));
+    fctx.save();
+    fctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    for (const { d, dist } of near) {
+      if (dist >= viewR) continue;
       const ds = toScreen(d.x, d.y);
-      fctx.save();
-      fctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      drawDog(fctx, ds.x, ds.y, 0.35 * ppm);
-      fctx.restore();
+      drawDog(fctx, ds.x, ds.y, 0.35 * ppm, false, dogStyle(d));
     }
+    fctx.restore();
     for (const t of game.trees) {
       if (Math.hypot(t.x - p.x, t.y - p.y) < viewR + 2) drawTree(fctx, t, sx, sy, ppm, { canopyAlpha: 0.55 });
     }
@@ -321,14 +409,20 @@ export function createRenderer(canvas, config, { getAudioLevels = null } = {}) {
     if (supportsFilter) fctx.filter = 'none';
     fctx.globalCompositeOperation = 'source-over';
     ctx.drawImage(fov, 0, 0, w, h);
+    // Rain dims the light a little.
+    if (rain?.darken) {
+      ctx.fillStyle = `${COLORS.rainDark}${rain.darken})`;
+      ctx.fillRect(0, HUD, w, h - HUD);
+    }
 
-    // Close by, the dog fades in from any direction, so you always see it just before you reach it.
+    // Close by, a dog fades in from any direction, so you always see it just before you reach it.
     const reveal = v.dogRevealRadius ?? 0;
-    if (dogDist < reveal) {
+    for (const { d, dist } of near) {
+      if (dist >= reveal) continue;
       const ds = toScreen(d.x, d.y);
       ctx.save();
-      ctx.globalAlpha = Math.min(1, (reveal - dogDist) / Math.max(1e-6, v.dogRevealFade ?? 0.5));
-      drawDog(ctx, ds.x, ds.y, 0.35 * ppm, true);
+      ctx.globalAlpha = Math.min(1, (reveal - dist) / Math.max(1e-6, v.dogRevealFade ?? 0.5));
+      drawDog(ctx, ds.x, ds.y, 0.35 * ppm, true, dogStyle(d));
       ctx.restore();
     }
 
@@ -347,7 +441,6 @@ export function createRenderer(canvas, config, { getAudioLevels = null } = {}) {
     const sx = (x) => ox + x * scale;
     const sy = (y) => oy + y * scale;
     const p = game.player;
-    const d = game.dog;
 
     ctx.fillStyle = COLORS.field;
     ctx.fillRect(sx(0), sy(0), map.width * scale, map.height * scale);
@@ -381,25 +474,32 @@ export function createRenderer(canvas, config, { getAudioLevels = null } = {}) {
       ctx.fill();
     }
 
-    // Line to the dog + win radius + dog
-    ctx.strokeStyle = COLORS.line;
-    ctx.setLineDash([6, 6]);
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(sx(p.x), sy(p.y));
-    ctx.lineTo(sx(d.x), sy(d.y));
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(sx(d.x), sy(d.y), config.rules.winRadius * scale, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = COLORS.dog;
-    ctx.beginPath();
-    ctx.arc(sx(d.x), sy(d.y), Math.max(5, 0.4 * scale), 0, Math.PI * 2);
-    ctx.fill();
-    ctx.font = '16px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('🐕', sx(d.x), sy(d.y) - Math.max(10, 0.6 * scale));
+    // Each dog: dashed line from the player (while still lost) + win radius + marker
+    game.dogs.forEach((d, i) => {
+      const col = DOG_COLORS[i % DOG_COLORS.length];
+      ctx.strokeStyle = `${col}99`;
+      ctx.setLineDash([6, 6]);
+      ctx.lineWidth = 1.5;
+      if (!d.found) {
+        ctx.beginPath();
+        ctx.moveTo(sx(p.x), sy(p.y));
+        ctx.lineTo(sx(d.x), sy(d.y));
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(sx(d.x), sy(d.y), config.rules.winRadius * scale, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      ctx.globalAlpha = d.found ? 0.6 : 1;
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.arc(sx(d.x), sy(d.y), Math.max(5, 0.4 * scale), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.font = '16px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${d.voice?.emoji ?? '🐕'}${d.found ? '❤️' : ''}`, sx(d.x), sy(d.y) - Math.max(10, 0.6 * scale));
+      ctx.globalAlpha = 1;
+    });
 
     // Vision window (for reference) and player
     ctx.fillStyle = COLORS.vision;
@@ -414,13 +514,16 @@ export function createRenderer(canvas, config, { getAudioLevels = null } = {}) {
 
   /** H overlay: live spatial mapping, occlusion, and bark-vs-ambient levels (estimated + measured). */
   function drawDebug(game) {
-    const a = computeDogParams(game.player, game.dog, config.audio, { trees: game.trees, occlusion: config.trees.occlusion });
+    const lost = game.dogs.filter((d) => !d.found);
+    const nearest = lost.reduce((b, d) => (Math.hypot(d.x - game.player.x, d.y - game.player.y) < Math.hypot(b.x - game.player.x, b.y - game.player.y) ? d : b), lost[0] ?? game.dog);
+    const a = computeDogParams(game.player, nearest, config.audio, { trees: game.trees, occlusion: config.trees.occlusion });
     const az = radToDeg(a.azimuth);
     const side = Math.abs(az) < 1 ? 'ahead' : az > 0 ? 'right' : 'left';
     const est = barkVsAmbient(config, game.difficultyKey);
     const estMax = barkVsAmbient(config, maxKey);
     const maxD = config.difficulties[maxKey].distance;
     const lines = [
+      `Dogs: ${game.dogsFound}/${game.dogs.length} found · movement ${game.options.movement} · rain ${game.rain} · readout below = nearest lost dog`,
       `Dog ${a.distance.toFixed(1)} m · ${Math.abs(az).toFixed(0)}° ${side}${a.rear > 0 ? ' (behind)' : ''} · bark ${fmtDb(20 * Math.log10(a.totalGain))} · LPF ${(a.cutoffHz / 1000).toFixed(1)} kHz`,
       `Occlusion: ${a.occlusion.trees} tree(s) on the line · ${fmtDb(a.occlusion.gainDb)} · cutoff ×${a.occlusion.cutoffFactor.toFixed(2)}`,
       `Ambient ${game.difficulty.label} (distraction ${est.profile.distraction.toFixed(2)}): bed ${est.profile.bedDb.toFixed(0)} · gust ${est.profile.gustDb.toFixed(0)} · bird ${est.profile.birdDb.toFixed(0)} dB${game.ambientMuted ? ' · MUTED (B)' : ''}`,
@@ -446,7 +549,8 @@ export function createRenderer(canvas, config, { getAudioLevels = null } = {}) {
     ctx.textAlign = 'left';
     ctx.fillStyle = COLORS.text;
     const diff = game.difficulty;
-    ctx.fillText(`Audio Detector: Find the Dog${diff ? ` — ${diff.label} (${diff.distance} m)` : ''}`, PAD, HUD / 2 + 4);
+    const rainTxt = game.rain && game.rain !== 'none' ? `, ${game.rain} rain` : '';
+    ctx.fillText(`Audio Detector: Find the Dog${diff ? ` — ${diff.label} (${diff.distance} m${rainTxt})` : ''}`, PAD, HUD / 2 + 4);
 
     if (game.stats && game.state !== GameState.MENU) {
       ctx.textAlign = 'right';
@@ -460,7 +564,8 @@ export function createRenderer(canvas, config, { getAudioLevels = null } = {}) {
       if (game.reveal && game.state === GameState.PLAYING) flag('REVEAL ON');
       if (game.ambientMuted) flag('AMBIENT MUTED');
       ctx.fillStyle = game.barkReady ? COLORS.text : COLORS.dim;
-      ctx.fillText(`time ${formatTime(game.stats.elapsed)}   barks ${game.stats.barks}`, x, HUD / 2 + 4);
+      const dogsTxt = game.dogs.length > 1 ? `dogs ${game.dogsFound}/${game.dogs.length}   ` : '';
+      ctx.fillText(`${dogsTxt}time ${formatTime(game.stats.elapsed)}   barks ${game.stats.barks}`, x, HUD / 2 + 4);
     }
 
     ctx.textAlign = 'center';

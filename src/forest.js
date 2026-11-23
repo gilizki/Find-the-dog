@@ -91,17 +91,18 @@ export function hasWalkablePath(map, trees, from, to, radius, cell = 0.25) {
 }
 
 /**
- * Trees for a round, with a guaranteed walkable path from player to dog. Regenerates on failure;
- * after cfg.maxAttempts failures the density is lowered (and eventually 0 trees, which always works).
+ * Trees for a round, with a guaranteed walkable path from the player to every dog (`dog`, or `dogs` for
+ * several). Regenerates on failure; after cfg.maxAttempts failures the density is lowered (and eventually
+ * 0 trees, which always works).
  */
-export function generateForest({ map, player, dog, density, treesCfg, playerRadius, rng = Math.random }) {
+export function generateForest({ map, player, dog, dogs = dog ? [dog] : [], density, treesCfg, playerRadius, rng = Math.random }) {
   let d = density;
   let attempts = 0;
   while (d > 0.01) {
     for (let i = 0; i < treesCfg.maxAttempts; i++) {
       attempts++;
-      const trees = scatterTrees(map, [player, dog], d, treesCfg, rng);
-      if (hasWalkablePath(map, trees, player, dog, playerRadius, treesCfg.gridCell)) return { trees, attempts, density: d };
+      const trees = scatterTrees(map, [player, ...dogs], d, treesCfg, rng);
+      if (dogs.every((g) => hasWalkablePath(map, trees, player, g, playerRadius, treesCfg.gridCell))) return { trees, attempts, density: d };
     }
     d *= treesCfg.densityFallbackFactor;
   }

@@ -133,3 +133,5 @@ kbd {
 #resultList dt { color: var(--dim); }
 #resultList dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
 #resultList dd.flag { color: var(--warm); }
+
+#movementHint { margin: -4px 0 12px; }

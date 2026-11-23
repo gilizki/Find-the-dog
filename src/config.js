@@ -9,12 +9,46 @@ export const CONFIG = {
     spawnMargin: 2,     // min distance from walls for player & dog at round start
   },
 
+  // rain: 'none' | 'light' | 'heavy' (see `rain` below). Rain is part of the difficulty.
   difficulties: {
-    easy:   { label: 'Easy',   distance: 10 },
-    medium: { label: 'Medium', distance: 25 },
-    hard:   { label: 'Hard',   distance: 50 },
+    easy:   { label: 'Easy',   distance: 10, rain: 'none' },
+    medium: { label: 'Medium', distance: 25, rain: 'light' },
+    hard:   { label: 'Hard',   distance: 50, rain: 'heavy' },
   },
   defaultDifficulty: 'medium',
+
+  // ---- Dogs (chosen on the start screen: how many, and how they move) ----
+  dogs: {
+    maxCount: 4,
+    defaultCount: 1,
+    defaultMovement: 'off',   // 'off' | 'calm' | 'restless' | 'shy'
+    minSeparation: 8,         // m between dogs at the start (relaxed if the map is too small)
+    radius: 0.25,             // m, collision with trunks and walls when moving
+    wallMargin: 1,            // m: dogs stay this far from the walls
+    barkStaggerSec: [0.12, 0.35], // s between the barks of different dogs on one SPACE
+    // Each dog has its own voice: `sample` = which recording (null = random each bark, used with one dog),
+    // `rate` = playback rate (pitch), `pitchScale` for the synthesized fallback. Names show on the end screen.
+    voices: [
+      { name: 'Rex',    emoji: '🐕', sample: null, rate: 1.0,  pitchScale: 1.0 },
+      { name: 'Pip',    emoji: '🐩', sample: 1,    rate: 1.3,  pitchScale: 1.4 },
+      { name: 'Bruno',  emoji: '🐕', sample: 2,    rate: 0.8,  pitchScale: 0.75 },
+      { name: 'Luna',   emoji: '🐶', sample: 0,    rate: 1.12, pitchScale: 1.15 },
+    ],
+    movement: {
+      calm:     { speed: [0.25, 0.4], legM: [1, 3], pauseSec: [4, 9] },
+      restless: { speed: [0.5, 0.8],  legM: [3, 8], pauseSec: [1, 3] },
+      // Shy: wanders like calm; runs away (slower than the player) when you come within noticeRadius,
+      // then rests and ignores you for restAfterFleeSec, so you can catch up.
+      shy:      { speed: [0.25, 0.4], legM: [1, 3], pauseSec: [4, 9], noticeRadius: 3.5, fleeSpeed: 1.0, fleeM: [4, 7], restAfterFleeSec: [4, 7] },
+    },
+  },
+
+  // ---- Rain (per difficulty). Non-spatial hiss + drops; heavy rain has louder bursts that can cover a bark. ----
+  // Levels use the same loudness reference as the bark (see `ambient`).
+  rain: {
+    light: { bedDb: -47, burstDb: null, burstEverySec: [0, 0], burstDurationSec: [0, 0], drops: 160, darken: 0.12 },
+    heavy: { bedDb: -42, burstDb: -37, burstEverySec: [10, 20], burstDurationSec: [3, 6], drops: 520, darken: 0.25 },
+  },
 
   placement: {
     tolerance: 0.5,     // |actual - target| distance must stay within this
@@ -239,5 +273,12 @@ export function validateConfig(cfg = CONFIG) {
     if (!(cfg.ambient.distraction[key] >= 0)) problems.push(`ambient.distraction.${key} missing`);
   }
   if (cfg.trees.minGap <= 2 * cfg.player.radius) problems.push('trees.minGap must exceed the player diameter');
+  for (const [key, d] of Object.entries(cfg.difficulties)) {
+    if (d.rain && d.rain !== 'none' && !cfg.rain[d.rain]) problems.push(`difficulty "${key}": rain "${d.rain}" is not defined`);
+  }
+  if (cfg.dogs.voices.length < cfg.dogs.maxCount) problems.push('dogs.voices needs one voice per dog (maxCount)');
+  for (const [mode, m] of Object.entries(cfg.dogs.movement)) {
+    if (Math.max(m.speed[1], m.fleeSpeed ?? 0) >= cfg.player.moveSpeed) problems.push(`dogs.movement.${mode}: must be slower than the player`);
+  }
   return problems;
 }

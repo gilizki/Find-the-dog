@@ -7,8 +7,17 @@ import { TAU } from './geometry.js';
 const lerp = (a, b, t) => a + (b - a) * t;
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
 
-/** Per-difficulty ambient settings: CONFIG.ambient.distraction[key] interpolates low -> high. */
-export function ambientProfile(config, difficultyKey) {
+/** Rain settings for a level ('none' | 'light' | 'heavy'), or null when it is dry. */
+export function rainProfile(config, level) {
+  const r = level && level !== 'none' ? config.rain?.[level] : null;
+  return r ? { level, ...r } : null;
+}
+
+/**
+ * Per-difficulty ambient settings: CONFIG.ambient.distraction[key] interpolates low -> high.
+ * Rain comes from the difficulty too (difficulties[key].rain), unless `rainLevel` overrides it.
+ */
+export function ambientProfile(config, difficultyKey, rainLevel = config.difficulties[difficultyKey]?.rain) {
   const a = config.ambient;
   const t = clamp01(a.distraction[difficultyKey] ?? 0.5);
   const L = a.low, H = a.high;
@@ -23,6 +32,7 @@ export function ambientProfile(config, difficultyKey) {
     birdEverySec: range('birdEverySec'),
     gustDurationSec: range('gustDurationSec'),
     birdFlock: intRange('birdFlock'),
+    rain: rainProfile(config, rainLevel),
   };
 }
 
@@ -43,6 +53,8 @@ export class AmbientDirector {
     this.nextGust = this._rand([0.3, 0.5]) * profile.gustEverySec[0];
     this.nextBird = this._rand([0.3, 0.8]) * profile.birdEverySec[0];
     this.pendingBirds = []; // flock members waiting for their call time: {at, ev}
+    const rain = profile.rain;
+    this.nextRainBurst = rain?.burstDb != null ? this._rand([0.4, 0.8]) * rain.burstEverySec[0] : Infinity;
   }
 
   stop() {
@@ -57,6 +69,11 @@ export class AmbientDirector {
     while (this.time >= this.nextGust) {
       events.push(this._gust(listener));
       this.nextGust += this._rand(this.profile.gustEverySec);
+    }
+    while (this.time >= this.nextRainBurst) {
+      const r = this.profile.rain;
+      events.push({ type: 'rainBurst', levelDb: r.burstDb + this._jitterDb(), duration: this._rand(r.burstDurationSec) });
+      this.nextRainBurst += this._rand(r.burstEverySec);
     }
     while (this.time >= this.nextBird) {
       this._flock(listener, this.nextBird);

@@ -77,8 +77,8 @@ export function computeDogParams(player, dog, audioCfg, { trees = [], occlusion:
 /**
  * Bark vs ambient level estimate (dB, same loudness reference for all sources) at a difficulty's distance.
  * Worst case for the bark: dog directly behind, maximum tree occlusion, quietest bark variation.
- *  - quietDb: base bed (+ crickets), i.e. the moments between gusts and birds
- *  - busyDb:  bed + the loudest gust + a bird at birds.referenceDistance, all at their loudest jitter
+ *  - quietDb: base bed (+ crickets, + steady rain), i.e. the moments between gusts and birds
+ *  - busyDb:  bed + the loudest gust + a bird at birds.referenceDistance (+ a rain burst), all at their loudest jitter
  * Master gain is common to everything and cancels out; ambient.masterGain does not.
  */
 export function barkVsAmbient(config, difficultyKey) {
@@ -91,8 +91,11 @@ export function barkVsAmbient(config, difficultyKey) {
   const amb = gainToDb(AM.masterGain);
   const quietParts = [p.bedDb];
   if (AM.crickets?.enabled) quietParts.push(AM.crickets.db);
+  if (p.rain) quietParts.push(p.rain.bedDb);
   const quietDb = amb + sumDb(quietParts);
   const birdAtRef = p.birdDb + AM.levelJitterDb + gainToDb(inverseDistanceGain(AM.birds.referenceDistance, A));
-  const busyDb = amb + sumDb([...quietParts, p.gustDb + AM.levelJitterDb, birdAtRef]);
+  const busyParts = [...quietParts, p.gustDb + AM.levelJitterDb, birdAtRef];
+  if (p.rain?.burstDb != null) busyParts.push(p.rain.burstDb + AM.levelJitterDb);
+  const busyDb = amb + sumDb(busyParts);
   return { barkDb, quietDb, busyDb, quietMarginDb: barkDb - quietDb, busyMarginDb: barkDb - busyDb, profile: p };
 }
