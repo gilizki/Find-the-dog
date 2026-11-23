@@ -83,6 +83,23 @@
   </section>
 
   <script>
+    // This game has no service worker. A leftover one from another project served on the same address
+    // (e.g. http://127.0.0.1:8000) would hand out stale copies of the game's files. Remove it and its
+    // caches, then reload once so every file comes fresh from the server.
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(async (regs) => {
+        if (!regs.length) return;
+        await Promise.all(regs.map((r) => r.unregister()));
+        if (window.caches) await Promise.all((await caches.keys()).map((k) => caches.delete(k)));
+        let reloaded = false;
+        try {
+          reloaded = sessionStorage.getItem('swCleanupReload') === '1';
+          sessionStorage.setItem('swCleanupReload', '1');
+        } catch { /* storage blocked: reload anyway, at most once since the worker is gone */ }
+        if (!reloaded) location.reload();
+      }).catch(() => {});
+    }
+
     // ES modules don't load from file:// - explain how to run instead of showing a dead page.
     if (location.protocol === 'file:') {
       document.getElementById('fileWarning').hidden = false;
