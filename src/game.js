@@ -168,10 +168,22 @@ export class Game {
     }
   }
 
-  /** SPACE: every dog that has not been found barks once (slightly out of step with each other). */
+  /** The lost (not yet found) dog closest to the player, or null. */
+  get nearestLostDog() {
+    let best = null, bestD = Infinity;
+    for (const d of this.dogs) {
+      if (d.found) continue;
+      const dd = distance(this.player, d);
+      if (dd < bestD) { best = d; bestD = dd; }
+    }
+    return best;
+  }
+
+  /** SPACE: only the closest dog that has not been found barks once. */
   bark() {
     if (!this.barkReady) return false;
-    this.audio.bark(this.dogs.filter((d) => !d.found).map((d) => d.id));
+    const dog = this.nearestLostDog;
+    this.audio.bark(dog ? [dog.id] : []);
     this.stats.barks++;
     this.barkCooldown = this.config.rules.barkCooldown;
     return true;

@@ -65,22 +65,30 @@ test('round with 3 dogs: all at the difficulty distance, reachable through the f
   assert.equal(new Set(game.dogs.map((d) => d.voice.name)).size, 3);
 });
 
-test('several dogs: SPACE barks only the lost ones; the round ends when all are found', () => {
+test('several dogs: SPACE barks only the closest lost dog; the round ends when all are found', () => {
   const { game, audio, events } = newGame(7);
   game.startRound('easy', { dogCount: 3 });
-  game.bark();
-  assert.deepEqual(audio.calls.find((c) => c.name === 'bark').args[0], [0, 1, 2]);
-
   const [a, b, c] = game.dogs;
+  const lastBark = () => audio.calls.filter((x) => x.name === 'bark').at(-1).args[0];
+  // Stand next to each dog in turn (just outside the win radius): that one barks.
+  for (const d of [b, c, a]) {
+    game.player = { x: d.x - CONFIG.rules.winRadius - 0.3, y: d.y, heading: 0 };
+    run(game, 1);
+    game.bark();
+    assert.deepEqual(lastBark(), [d.id]);
+  }
+
   game.player = { x: a.x - 1, y: a.y, heading: 0 };
   game.update(DT, IDLE);
   assert.equal(game.state, GameState.PLAYING);
   assert.equal(game.dogsFound, 1);
   assert.ok(events.some((e) => e.t === 'dogFound' && e.p.found === 1 && e.p.total === 3));
 
+  // A found dog never barks again: the closest of the remaining ones does.
   run(game, 1);
   game.bark();
-  assert.deepEqual(audio.calls.filter((x) => x.name === 'bark').at(-1).args[0], [1, 2]);
+  const nearer = distance(game.player, b) < distance(game.player, c) ? b : c;
+  assert.deepEqual(lastBark(), [nearer.id]);
 
   game.player = { x: b.x, y: b.y - 1, heading: 0 };
   game.update(DT, IDLE);

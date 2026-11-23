@@ -6,7 +6,7 @@
 //    the screen and the world rotates around them when they turn); everything is dark except the tiny
 //    vision window in front of the player (soft edge), plus the player and heading arrow.
 //  - overview (H reveal, win screen): the whole map with trees, path, dogs, and the audio debug readout.
-// Rain (per difficulty) is drawn in both: darker light, falling streaks, and splash rings on the ground.
+// Rain (per difficulty) is drawn only inside the vision window: darker light, falling streaks, splash rings.
 
 import { forwardVector, rightVector, radToDeg } from './geometry.js';
 import { barkVsAmbient, computeDogParams } from './audioMapping.js';
@@ -111,7 +111,6 @@ export function createRenderer(canvas, config, { getAudioLevels = null } = {}) {
       const rain = config.rain?.[game.rain] ?? null;
       if (game.showSolution) drawOverview(game, w, h);
       else drawFollow(game, w, h, rain, dt);
-      if (rain) drawRainStreaks(rain, w, h, dt, game.showSolution ? 0.5 : 1);
     }
     drawHud(game, w, h);
   }
@@ -248,34 +247,41 @@ export function createRenderer(canvas, config, { getAudioLevels = null } = {}) {
 
   // ---- rain ------------------------------------------------------------------
 
-  /** Falling streaks over the whole screen (screen space, so they read as rain whichever way you face). */
-  function drawRainStreaks(rain, w, h, dt, alpha) {
-    const target = Math.round(rain.drops * (w * h) / (1280 * 720));
+  /**
+   * Falling streaks in screen space (so they read as rain whichever way you face), inside the square
+   * box (cx ± R, cy ± R) around the player. Drawn into the vision layer before its mask, so rain is only
+   * visible in the lit window.
+   */
+  function drawRainStreaks(c, rain, cx, cy, R, dt) {
+    const size = 2 * R;
+    const target = Math.round(rain.drops * (size * size) / (1280 * 720) * 1.5);
     const S = rainFx.streaks;
-    const spawn = () => ({ x: Math.random() * (w + 200) - 100, y: Math.random() * h, len: 10 + Math.random() * 18, v: 650 + Math.random() * 450, a: 0.15 + Math.random() * 0.25 });
-    if (rainFx.level !== rain || S.length !== target) {
+    const spawn = () => ({ x: Math.random() * size, y: Math.random() * size, len: 10 + Math.random() * 18, v: 650 + Math.random() * 450, a: 0.25 + Math.random() * 0.35 });
+    if (rainFx.level !== rain || rainFx.size !== size || S.length !== target) {
       rainFx.level = rain;
-      S.length = Math.min(S.length, target);
+      rainFx.size = size;
+      S.length = 0;
       while (S.length < target) S.push(spawn());
     }
     const slant = 0.22; // wind: streaks lean a little
-    ctx.save();
-    ctx.lineWidth = 1;
-    ctx.lineCap = 'round';
+    const x0 = cx - R, y0 = cy - R;
+    c.save();
+    c.lineWidth = 1.2;
+    c.lineCap = 'round';
     for (const d of S) {
       d.y += d.v * dt;
       d.x += d.v * dt * slant;
-      if (d.y - d.len > h || d.x > w + 100) {
+      if (d.y - d.len > size || d.x > size) {
         Object.assign(d, spawn());
-        d.y = HUD - d.len - Math.random() * 40;
+        d.y = -Math.random() * 40;
       }
-      ctx.strokeStyle = `${COLORS.rain}${(d.a * alpha).toFixed(3)})`;
-      ctx.beginPath();
-      ctx.moveTo(d.x, d.y);
-      ctx.lineTo(d.x - d.len * slant, d.y - d.len);
-      ctx.stroke();
+      c.strokeStyle = `${COLORS.rain}${d.a.toFixed(3)})`;
+      c.beginPath();
+      c.moveTo(x0 + d.x, y0 + d.y);
+      c.lineTo(x0 + d.x - d.len * slant, y0 + d.y - d.len);
+      c.stroke();
     }
-    ctx.restore();
+    c.restore();
   }
 
   /** Splash rings on the ground around the player (world space, drawn into the vision window). */
@@ -397,6 +403,18 @@ export function createRenderer(canvas, config, { getAudioLevels = null } = {}) {
     for (const t of game.trees) {
       if (Math.hypot(t.x - p.x, t.y - p.y) < viewR + 2) drawTree(fctx, t, sx, sy, ppm, { canopyAlpha: 0.55 });
     }
+    // Rain (only inside the window: drawn before the mask): dimmer light + falling streaks.
+    if (rain) {
+      const R = (v.range + config.player.radius + 0.5) * ppm;
+      fctx.save();
+      fctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      if (rain.darken) {
+        fctx.fillStyle = `${COLORS.rainDark}${rain.darken})`;
+        fctx.fillRect(cx - R, cy - R, 2 * R, 2 * R);
+      }
+      drawRainStreaks(fctx, rain, cx, cy, R, dt);
+      fctx.restore();
+    }
     // Mask: keep only the (soft-edged) vision window.
     fctx.globalCompositeOperation = 'destination-in';
     if (supportsFilter) fctx.filter = `blur(${Math.max(1, (v.softEdge * ppm) / 2).toFixed(1)}px)`;
@@ -409,11 +427,6 @@ export function createRenderer(canvas, config, { getAudioLevels = null } = {}) {
     if (supportsFilter) fctx.filter = 'none';
     fctx.globalCompositeOperation = 'source-over';
     ctx.drawImage(fov, 0, 0, w, h);
-    // Rain dims the light a little.
-    if (rain?.darken) {
-      ctx.fillStyle = `${COLORS.rainDark}${rain.darken})`;
-      ctx.fillRect(0, HUD, w, h - HUD);
-    }
 
     // Close by, a dog fades in from any direction, so you always see it just before you reach it.
     const reveal = v.dogRevealRadius ?? 0;

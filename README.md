@@ -48,7 +48,7 @@ npm test        # = node --test "tests/**/*.test.js"   (Node 18+; no packages ne
 | --- | --- |
 | ← / → or A / D | Turn left / right |
 | ↑ / ↓ or W / S | Walk forward / backward (relative to your heading) |
-| Space | Every dog not yet found barks once (0.5 s cooldown; they never bark on their own) |
+| Space | The closest dog not yet found barks once (0.5 s cooldown; dogs never bark on their own) |
 | H | Reveal: full map, trees, dog, path and the audio debug readout. **Recorded in the results** |
 | B | Mute / unmute the forest ambience (for testing). Stays muted across rounds. **Recorded in the results** |
 | R | Restart with new random positions and a new forest |
@@ -61,11 +61,11 @@ No levels and no score: you pick what kind of game you want, and the choice is r
 
 - **Difficulty**: distance to the dogs, tree density, wind/birds, and **rain**: Easy is dry, Medium has
   light rain, Hard has heavy rain with louder bursts that can cover a bark (`CONFIG.difficulties[*].rain`,
-  levels in `CONFIG.rain`). Rain is visible too: falling streaks, splash rings on the ground in your vision
-  window, and slightly darker light.
+  levels in `CONFIG.rain`). Rain is visible only inside your lit vision window: falling streaks,
+  splash rings on the ground, and slightly darker light.
 - **Dogs (1-4)**: every dog is at the difficulty distance from you (in different directions, at least
   `dogs.minSeparation` apart) with a guaranteed walkable path. Each has its own voice (recording + pitch,
-  `CONFIG.dogs.voices`). Space makes all lost dogs bark, slightly out of step and in a random order. A found
+  `CONFIG.dogs.voices`). Space makes only the closest lost dog bark, so you track one dog at a time. A found
   dog goes quiet, you hear a short happy yip, and the HUD counts `dogs 1/3`. The round ends when all are found.
 - **Dogs move** (`CONFIG.dogs.movement`, all slower than the player):
   - *No*: the dogs stay put.
